@@ -3,11 +3,11 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <fstream> 
+#include <vector>
 
- 
 #define RGB 0
 #define HSV 1
-//#include "ImageInfo.h"
 
 using namespace cv;
 
@@ -16,37 +16,6 @@ struct MyNode {
      int left, high, right, low;
      std::unique_ptr<MyNode> next;
      MyNode(int a, int b, int c = 0, int d = 0) : left{a},high{b}, right{c},low{d}, next{nullptr} {}
- };
-
-
-//list of MyNodes
-struct List {
-     List() : head{nullptr} {};
- 
-     void push(int a, int b, int c=0, int d=0) {
-        auto temp{std::make_unique<MyNode>(a, b, c, d)};
-        if(head) {
-            temp->next = std::move(head);
-            head = std::move(temp);
- 
-        } else {
-            head = std::move(temp);
-        }
-     }
-
-     MyNode* getHead(){
-        return head.get();
-     }
-
-     //to avoid stack overflow due to recursive destroing nodes
-     void clean() {
-         while(head) 
-             head = std::move(head->next);
-        }
-     ~List() {clean();}
- 
- private:
-     std::unique_ptr<MyNode> head;
  };
 
 
@@ -67,9 +36,9 @@ bool isSimilar(Vec3b pixel, Vec3b checkedPixel, int colorRepresentation){
 
 //struct to store points in set
 struct Coordinates {
-     int row,col;
-     Coordinates(int a=0, int b=0) : row{a},col{b} {}
-     const bool operator<(const Coordinates& rhs)const;
+    int row,col;
+    Coordinates(int a=0, int b=0) : row{a},col{b} {}
+    const bool operator<(const Coordinates& rhs)const;
  };
 
 const bool Coordinates::operator<(const Coordinates& rhs) const 
@@ -85,7 +54,7 @@ const bool Coordinates::operator<(const Coordinates& rhs) const
 class ImageInfo{
 private:
     bool** processed;
-    List detectedObjects;
+    std::vector <MyNode> detectedObjects;
     Mat image;
     int colorRepresentation;
 public:
@@ -95,6 +64,7 @@ public:
     void displayImage();
     MyNode process(int row, int col);
     int findObjects();
+    void saveObjects(std::string outputFileName);
 };
 
 ImageInfo::ImageInfo(std::string imagePath, int representanion){
@@ -103,6 +73,13 @@ ImageInfo::ImageInfo(std::string imagePath, int representanion){
     {
         throw std::invalid_argument("Incorrect file path!");
     }
+
+    this->colorRepresentation = representanion;
+
+    if (representanion){
+        cvtColor(this->image, this->image, COLOR_BGR2HSV);
+    }
+
     this->processed = new bool*[this->image.rows];
     for (int i = 0; i < this->image.rows; i++) {
  
@@ -116,16 +93,38 @@ ImageInfo::ImageInfo(std::string imagePath, int representanion){
 }
 
 ImageInfo::~ImageInfo(){
-    for (int i = 0; i < this->image.rows; i++) // To delete the inner
-                                // arrays
+    for (int i = 0; i < this->image.rows; i++)
         delete[] this->processed[i];
     delete[] this->processed; 
 }
 
 void ImageInfo::displayImage(){
     namedWindow("Display Image", 0 );
-    imshow("Display Image", this->image);
+    Mat bgr_image;
+    cvtColor(this->image,bgr_image,COLOR_HSV2BGR);
+    imshow("Display Image", bgr_image);
     waitKey(0);
+}
+
+void ImageInfo::saveObjects(std::string outputFileName){
+    std::fstream outputFile;
+    outputFile.open(outputFileName.c_str(),std::ios::out);
+
+    if (!outputFile){
+        std::cout << "Unable to create output file!\n";
+        return;
+    }
+
+    int x,y;
+
+    for (int i = 0; i < this->detectedObjects.size(); i++){
+        x = (this->detectedObjects[i].left+this->detectedObjects[i].right)/2;
+        y = (this->detectedObjects[i].low +this->detectedObjects[i].high)/2;
+        outputFile << x << "\t" << y <<"\n";
+        //std::cout << x << "\t" << y <<"\n";
+    }
+
+    outputFile.close();
 }
 
 MyNode ImageInfo::process(int row, int col){
@@ -177,18 +176,28 @@ MyNode ImageInfo::process(int row, int col){
 }
 
 int ImageInfo::findObjects(){
-    this->detectedObjects.clean();
+    this->detectedObjects.clear();
     int objects = 0;
     MyNode temp(0,0,0,0);
+
     for (int i = 0; i < this->image.rows; i++)
         for (int j = 0; j< this->image.cols; j++){
             if (this->processed[i][j] == false){
                 temp = process(i,j);
 
-                if (temp.right - temp.left < this->image.cols/3 && abs(temp.high - temp.low) < this->image.rows/3
-                    && temp.right - temp.left > this->image.cols/100 && abs(temp.high - temp.low) > this->image.rows/100 ){
-                     objects++;
-                     rectangle(this->image,Point(temp.left,temp.high),Point(temp.right,temp.low),Scalar(0,0,0),3,LINE_4);
+                if (temp.right - temp.left < this->image.cols/3 
+                    && abs(temp.high - temp.low) < this->image.rows/3
+                    && temp.right - temp.left > this->image.cols/100 
+                    && abs(temp.high - temp.low) > this->image.rows/100 )
+                {
+                    objects++;
+                    detectedObjects.push_back(MyNode(temp.left,
+                    temp.high, temp.right, temp.low));
+                    rectangle(this->image,
+                        Point(temp.left,temp.high),
+                        Point(temp.right,temp.low),
+                        Scalar(0,0,0),3,LINE_4
+                    );
                 }
                    
             }
@@ -201,20 +210,33 @@ int ImageInfo::findObjects(){
 int main(int argc, char** argv )
 {
     try{
-        std::cout<<"Gimmie path to the photo here -> ";
-        std::string photoPath;
-        std::cin>>photoPath;
-        auto picture = new ImageInfo(photoPath,0);
+        std::string photoPath,outputName;
 
-        std::cout<<picture->findObjects();
+        if (argc == 1){
+            std::cout<<"Input path to the photo here -> ";
+            std::cin >> photoPath;
+            std::cout<<"Input path to the output file here -> ";
+            std::cin >> outputName;
+        } else if (argc == 3){
+            photoPath = argv[1];
+            outputName = argv[2];
+        } else {
+            std::cout<<"Error: Wrong number of arguments!";
+            return -1;
+        }
 
-        picture->displayImage();
+        auto picture = new ImageInfo(photoPath,1);
+
+        std::cout << picture->findObjects();
+
+        //picture->displayImage();
+
+        picture->saveObjects(outputName);
     }
     catch (std::invalid_argument& e){    
         std::cerr << e.what() << std::endl;
         return -1;
     }
-    //C:\Users\Ja\Pictures\detect_paint_holds.png
-    //C:\Users\Ja\Pictures\cartoon_wall.png
+
     return 0;
 }
